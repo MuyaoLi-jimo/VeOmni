@@ -18,6 +18,7 @@ from collections import defaultdict
 from typing import Dict, List, Literal, Sequence
 
 import torch
+import random
 from transformers import AutoTokenizer, PreTrainedTokenizer
 
 from ...utils import logging
@@ -464,6 +465,92 @@ class Qwen2_5VLChatTemplate(Qwen2_5VLTemplate):
         return tokenized_example
 
 
+class Qwen2_5VLFocalChatTemplate(Qwen2_5VLTemplate):
+    template_type = "conversation"
+    system_prompt = "You are a helpful assistant."
+
+    def _set_system_prompt(self, system_prompt: str):
+        self.system_prompt = system_prompt
+
+    def _get_system_mesage(self):
+        system_message = {
+            "role": "system",
+            "content": self.system_prompt,
+            "loss_mask": 0,
+        }
+        return system_message
+
+    def encode_messages(
+        self,
+        conversations: Sequence[Dict[str, str]],
+        mm_num_tokens: Dict[str, List[int]],
+    ) -> Dict[str, List[int]]:
+        image_index = 0
+        messages = []
+        token_num_list = mm_num_tokens.pop("image", [])
+        assert len(mm_num_tokens) == 0
+        # messages.append(self._get_system_mesage())
+        last_assistent_content = ""
+        focal_alpha = 1.0
+        min_focal_alpha = 3 / (len(conversations)+10)
+        for message in conversations:
+            role = message[0]
+            content = ""
+            for value in message[1:]:
+                if value[0] == "text":
+                    content += value[1]
+                else:
+                    assert value[0] == "image"
+                    content += self.image_pattern(token_num_list[image_index])
+                    image_index += 1                
+            messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "loss_mask": 1 if role == "assistant" else 0,
+                }
+            )
+            if role == "assistant":
+                if last_assistent_content == content:
+                    focal_alpha *= 0.75
+                    focal_alpha = max(min_focal_alpha, focal_alpha)
+                    if random.random() > focal_alpha:
+                        messages[-1]["loss_mask"] = 0
+                else:
+                    focal_alpha = 1.0
+                last_assistent_content = content
+        #if messages[-1]["role"] == "assistant":
+            #messages[-1]["loss_mask"] = 1
+
+        input_ids, attention_mask, labels = [], [], []
+        
+        for message in messages:
+            if message["content"] == "":  # eval
+                content_str = "<|im_start|>" + message["role"] + "\n"
+            else:
+                content_str = "<|im_start|>" + message["role"] + "\n" + message["content"].strip() + "<|im_end|>\n"
+            content_ids = self.tokenizer.encode(content_str, add_special_tokens=False)
+            input_ids += content_ids
+            attention_mask += [1] * len(content_ids)
+            if message["loss_mask"] == 1:
+                labels += content_ids
+            else:
+                labels += [IGNORE_INDEX] * len(content_ids)
+        #print([message["loss_mask"] for message  in messages])
+        tokenized_example = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        tokenized_example = {k: torch.tensor(v) for k, v in tokenized_example.items()}
+
+        # change qwen2vl_tokenized_image_id to seedomni_image_id
+        image_mask = tokenized_example["input_ids"] == self.image_token_id
+        input_mask = tokenized_example["labels"] == IGNORE_INDEX
+        input_image_mask = image_mask & input_mask
+        output_image_mask = image_mask & ~input_mask
+        tokenized_example["input_ids"][input_image_mask] = TYPE2INDEX["input"]["image"]
+        tokenized_example["input_ids"][output_image_mask] = TYPE2INDEX["output"]["image"]
+        tokenized_example["labels"][output_image_mask] = IGNORE_INDEX  # the label will be filled in decoder.
+
+        return tokenized_example
+
 class JanusChatTemplate(ChatmlTemplate):
     def __init__(self, tokenizer: PreTrainedTokenizer) -> None:
         super().__init__(tokenizer)
@@ -560,6 +647,7 @@ TEMPLATES = {
     "qwen2vl_pretrain_stg1": Qwen2VLPretrainSTG1Template,
     "qwen2vl_pretrain": Qwen2VLPretrainTemplate,
     "qwen2_5vl": Qwen2_5VLChatTemplate,
+    "qwen2_5vlwithfocal": Qwen2_5VLFocalChatTemplate,
     "janus": JanusChatTemplate,
 }
 

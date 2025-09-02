@@ -125,7 +125,7 @@ class DataArguments:
         metadata={"help": "Path of the training data. Use comma to separate multiple datasets."},
     )
     train_size: int = field(
-        default=10_000_000,
+        default=None,
         metadata={"help": "Number of tokens for training to compute training steps for dynamic batch dataloader."},
     )
     data_type: Literal["plaintext", "conversation", "diffusion"] = field(
@@ -169,7 +169,7 @@ class DataArguments:
         metadata={"help": "Number of workers to load data."},
     )
     prefetch_factor: int = field(
-        default=2,
+        default=2, #2
         metadata={"help": "Number of batches loaded in advance by each worker."},
     )
     drop_last: bool = field(
@@ -177,7 +177,7 @@ class DataArguments:
         metadata={"help": "Whether to drop the last incomplete batch."},
     )
     pin_memory: bool = field(
-        default=True,
+        default=False, #True
         metadata={"help": "Whether to pin memory for dataloader."},
     )
 
@@ -233,15 +233,15 @@ class TrainingArguments:
         metadata={"help": "Epochs to train."},
     )
     rmpad: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Enable padding-free training by using the cu_seqlens."},
     )
     rmpad_with_pos_ids: bool = field(
-        default=False,
+        default=True,
         metadata={"help": "Enable padding-free training by using the position_ids."},
     )
     dyn_bsz: bool = field(
-        default=True,
+        default=False,
         metadata={"help": "Enable dynamic batch size for padding-free training."},
     )
     dyn_bsz_margin: int = field(

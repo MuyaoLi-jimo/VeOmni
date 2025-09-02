@@ -81,7 +81,7 @@ def build_foundation_model(
 
         from ..ops.attention import flash_attention_forward
 
-        ALL_ATTENTION_FUNCTIONS.register("flash_attention_2", flash_attention_forward)
+        ALL_ATTENTION_FUNCTIONS["flash_attention_2"] = flash_attention_forward
 
     init_kwargs = {
         "config": config,

@@ -9,8 +9,11 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List
 import torch
 import torch.distributed as dist
 import wandb
+import swanlab
 from PIL import Image
 from tqdm import trange
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 from veomni.checkpoint import build_checkpointer, ckpt_to_state_dict
 from veomni.data import (
@@ -24,6 +27,8 @@ from veomni.data import (
 )
 from veomni.data.constants import IMAGE_INPUT_INDEX
 from veomni.data.multimodal.preprocess import conv_preprocess
+
+from veomni.data.system_prompt import SYSTEM_PROMPT_MAP
 from veomni.distributed.offloading import build_activation_offloading_context
 from veomni.distributed.parallel_state import get_parallel_state, init_parallel_state
 from veomni.distributed.torch_parallelize import build_parallelize_model
@@ -49,12 +54,22 @@ ROLE_MAPPING = {
     "gpt": "assistant",
 }
 
+def prepare_system_prompt(example:dict):
+    system_prompt = ""
+    if example.get("system_prompt"):
+        return example["system_prompt"]
+    for system_prompt_label,local_system_prompt in SYSTEM_PROMPT_MAP.items(): # only choose the final one
+        if system_prompt_label in example.get("label",[]):
+            system_prompt = local_system_prompt
+            break
+    return system_prompt
 
 def process_sample(
     sample: Dict[str, Any],
     processor: "ProcessorMixin",
     chat_template: "ChatTemplate",
     position_id_func: "Callable",
+    forbid_system_prompt:bool = False,
     **kwargs,
 ):
     """
@@ -64,6 +79,13 @@ def process_sample(
         kwargs["source_name"] if "source_name" in kwargs else sample["source"]
     )  # source_name if use multisource_dataset
     conversations = sample["conversations"] if "conversations" in sample else sample["text"]  # text-only data
+    
+    if forbid_system_prompt:
+        system_prompt = ""
+    else:
+        system_prompt = prepare_system_prompt(sample)
+    kwargs["system_prompt"] = system_prompt
+    
     conversations = conv_preprocess(source, conversations, **kwargs)
 
     token_num_inputs, image_inputs = {}, {}
@@ -78,10 +100,50 @@ def process_sample(
         merge_length = processor.image_processor.merge_size**2
         image_token_num = image_grid_thw.prod(dim=-1) // merge_length
         token_num_inputs["image"] = image_token_num
+    elif "image" in sample and sample["image"]:
+        images = []
+        for image in sample["image"]:
+            resolution = [0,0]
+            if isinstance(image,dict):
+                image_path = image["image_path"]
+                resolution = image["resolution"]
+            try:
+                image_content = Image.open(image_path).convert("RGB")
+                width, height = image_content.size
+                min_edge = min(width, height)
+
+                # 如果最小边小于 28，进行放大
+                if min_edge < 28:
+                    scale = 28 / min_edge
+                    new_width = int(width * scale)
+                    new_height = int(height * scale)
+                    image_content = image_content.resize(
+                        (new_width, new_height), 
+                        resample=Image.LANCZOS  # 高质量重采样
+                    )
+                if any(r!=0 for r in resolution):
+                    image_content.resize(size=resolution)
+            except FileNotFoundError as ef:
+                print(ef)
+                if images:
+                    image_content = images[-1]
+                else:
+                    width, height = 640, 360
+                    image_content = Image.new("RGB", (width, height), (255, 255, 255))
+            images.append(image_content)
+            
+        image_inputs = processor.image_processor(images=images, return_tensors="pt")
+        image_grid_thw = image_inputs["image_grid_thw"]
+        merge_length = processor.image_processor.merge_size**2
+        image_token_num = image_grid_thw.prod(dim=-1) // merge_length
+        token_num_inputs["image"] = image_token_num
 
     tokenized_example = chat_template.encode_messages(conversations, token_num_inputs)
     tokenized_example = {k: torch.tensor(v) for k, v in tokenized_example.items()}
     input_ids = tokenized_example["input_ids"]
+    if input_ids.size(0) > kwargs["max_seq_length"]:
+        print(f"{sample['id']}'s: seq_length {input_ids.size(0)} larger than {kwargs['max_seq_length']} ")
+    assert input_ids.size(0) <= kwargs["max_seq_length"]
 
     position_ids = position_id_func(
         input_ids=input_ids.unsqueeze(0),
@@ -94,7 +156,6 @@ def process_sample(
     tokenized_example["input_ids"][tokenized_example["image_mask"]] = 0
     tokenized_example.update(image_inputs)
     return [tokenized_example]
-
 
 def get_param_groups(model: "torch.nn.Module", default_lr: float, vit_lr: float):
     vit_params, other_params = [], []
@@ -121,9 +182,22 @@ class MyTrainingArguments(TrainingArguments):
 
 
 @dataclass
+class MyDataArguments(DataArguments):
+    source_name: str = field(
+        default="craftjarvis",
+    )
+    forbid_system_prompt:bool = field(
+        default=False,
+    )
+    enable_multisource: bool = field(
+        default=True,
+    )
+    
+
+@dataclass
 class Arguments:
     model: "ModelArguments" = field(default_factory=ModelArguments)
-    data: "DataArguments" = field(default_factory=DataArguments)
+    data: "MyDataArguments" = field(default_factory=MyDataArguments)
     train: "MyTrainingArguments" = field(default_factory=MyTrainingArguments)
 
 
@@ -174,6 +248,9 @@ def main():
         processor=processor,
         chat_template=chat_template,
         position_id_func=position_id_func,
+        source_name = args.data.source_name,
+        max_seq_length = args.data.max_seq_len,
+        forbid_system_prompt = args.data.forbid_system_prompt
     )
 
     if args.train.rmpad:
@@ -264,11 +341,13 @@ def main():
     )
 
     if args.train.global_rank == 0:
+        swanlab.sync_wandb( wandb_run=False)
         if args.train.use_wandb:
             wandb.init(
                 project=args.train.wandb_project,
                 name=args.train.wandb_name,
                 config={**vars(args.model), **vars(args.data), **vars(args.train)},  # flatten dict
+               #  mode="offline",
             )
 
         if args.train.enable_profiling:
@@ -292,9 +371,9 @@ def main():
         global_batch_size=args.train.global_batch_size,
         rmpad=args.train.rmpad,
         rmpad_with_pos_ids=args.train.rmpad_with_pos_ids,
-        enable_multisource=args.data.enable_multisource,
-        dataloader=train_dataloader,
-        data_path=args.data.train_path,
+        #enable_multisource=args.data.enable_multisource,
+        #dataloader=train_dataloader,
+        #data_path=args.data.train_path,
         empty_cache_steps=args.train.empty_cache_steps,
     )
 
@@ -310,8 +389,8 @@ def main():
         if start_step == 0:  # resume at the end of epoch
             iter(train_dataloader)  # clear resume state and prefetch data
 
-        if args.train.global_rank == 0:
-            helper.load_step2token(args.train.load_checkpoint_path)
+        #if args.train.global_rank == 0:
+            #helper.load_step2token(args.train.load_checkpoint_path)
         dist.barrier()
         logger.info_rank0(f"Load distributed checkpoint from {args.train.load_checkpoint_path} successfully!")
 
@@ -413,12 +492,13 @@ def main():
                 }
                 Checkpointer.save(args.train.save_checkpoint_path, state, global_steps=global_step)
                 if args.train.global_rank == 0:
-                    helper.save_step2token(
-                        args.train.step2token_path,
-                        consumed_tokens=train_metrics["consume_tokens(B)"],
-                        global_step=global_step,
-                        save_checkpoint_path=save_checkpoint_path,
-                    )
+                    # helper.save_step2token(
+                    #     args.train.step2token_path,
+                    #     consumed_tokens=train_metrics["consume_tokens(B)"],
+                    #     global_step=global_step,
+                    #     save_checkpoint_path=save_checkpoint_path,
+                    # )
+                    pass
                 dist.barrier()
                 logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
 
@@ -440,12 +520,13 @@ def main():
             }
             Checkpointer.save(args.train.save_checkpoint_path, state, global_steps=global_step)
             if args.train.global_rank == 0:
-                helper.save_step2token(
-                    args.train.step2token_path,
-                    consumed_tokens=train_metrics["consume_tokens(B)"],
-                    global_step=global_step,
-                    save_checkpoint_path=save_checkpoint_path,
-                )
+                pass
+                # helper.save_step2token(
+                #     args.train.step2token_path,
+                #     consumed_tokens=train_metrics["consume_tokens(B)"],
+                #     global_step=global_step,
+                #     save_checkpoint_path=save_checkpoint_path,
+                # )
             dist.barrier()
             logger.info_rank0(f"Distributed checkpoint saved at {save_checkpoint_path} successfully!")
 
@@ -461,7 +542,7 @@ def main():
                 save_checkpoint_path=save_checkpoint_path,
                 output_dir=args.train.output_dir,
                 ckpt_manager=args.train.ckpt_manager,
-            )
+            )                                     
             save_model_weights(hf_weights_path, model_state_dict, model_assets=model_assets)
             logger.info_rank0(f"Huggingface checkpoint saved at {hf_weights_path} successfully!")
 

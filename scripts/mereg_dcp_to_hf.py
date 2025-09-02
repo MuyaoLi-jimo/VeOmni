@@ -6,6 +6,8 @@ from transformers import AutoConfig, AutoProcessor
 from veomni.checkpoint import bytecheckpoint_ckpt_to_state_dict
 from veomni.models import save_model_weights
 from veomni.utils import helper
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 logger = helper.create_logger(__name__)

@@ -16,7 +16,58 @@
 import random
 import re
 from typing import Any, Dict, List
+import numpy as np
 
+
+def craftjarvis_sft_preprocess(conversations, system_prompt:str="", **kwargs):
+    constructed_conversations = []
+    
+    if conversations[0]["role"] != "user":  # Skip the first one if it is not from human
+        conversations = conversations[1:]
+    assert conversations[0]["role"] == "user"
+    think_begin = kwargs.get("think_begin", "<think>")
+    think_end = kwargs.get("think_end", "</think>")
+    
+    
+    system_content = {
+        "type": "text",
+        "text": system_prompt,
+    }
+    conversations[0]["content"] = [system_content] + conversations[0]["content"]
+
+    for conversation in conversations:
+        content = conversation["content"]
+        role = conversation["role"]
+        if isinstance(content,str):
+            constructed_conversations.append([role, ("text", content)])
+        else:
+            construct_contents = []
+            for c in content:
+                item_type = c["type"]
+                if item_type == "text":
+                    construct_contents.append(("text", c["text"]))
+                elif item_type == "point":
+                    caption = c.get("label","")
+                    points = c.get("point",[])
+                    point_text = ""
+                    for point in points:
+                        new_point = np.array([point[0],point[1]],dtype=float) * 10
+                        new_point = [int(p) for p in new_point]
+                        point_text += f"({new_point[0]},{new_point[1]}),"
+                    point_text = point_text.rstrip(',')
+                    text = ""
+                    if caption:
+                        text += "<|object_ref_start|>{labels}<|object_ref_end|>".format(labels=caption)
+                    text += "<|point_start|>{point}<|point_end|>".format(point=point_text)
+                    construct_contents.append(("text", text))
+                elif item_type == "think":
+                    think_text = think_begin + c["text"] + think_end
+                    construct_contents.append(("text", think_text))
+                else:
+                    assert item_type == "image"
+                    construct_contents.append(("image", None))
+            constructed_conversations.append([role]+construct_contents)
+    return constructed_conversations
 
 def sharegpt4v_pretrain_preprocess(conversations, generation_ratio=0.0, **kwargs):
     constructed_conversation = []
@@ -61,6 +112,7 @@ def sharegpt4v_sft_preprocess(conversations, **kwargs):
             else:
                 constructed_conversation.append([role, ("text", value)])
     return constructed_conversation
+
 
 
 def doom_preprocess(conversations, max_image_nums=None, **kwargs):
@@ -296,6 +348,7 @@ def mmsci_preprocess(conversations, **kwargs):
 
 
 DATASETS = {
+    "craftjarvis": craftjarvis_sft_preprocess,
     "sharegpt4v_pretrain": sharegpt4v_pretrain_preprocess,
     "sharegpt4v_captioner": sharegpt4v_pretrain_preprocess,
     "sharegpt4v_sft": sharegpt4v_sft_preprocess,

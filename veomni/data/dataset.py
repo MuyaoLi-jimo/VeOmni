@@ -14,6 +14,7 @@
 
 
 import os
+from pathlib import Path
 from typing import Callable, Dict, List, Literal, Optional
 
 import torch
@@ -125,7 +126,7 @@ def build_mapping_dataset(
         if os.path.isdir(data_path):
             data_files.extend([os.path.join(data_path, fn) for fn in os.listdir(data_path)])
         elif os.path.isfile(data_path):
-            data_files.append(data_files)
+            data_files.append(data_path)
         else:
             raise FileNotFoundError(f"Dataset {data_path} not exists.")
 
@@ -134,6 +135,9 @@ def build_mapping_dataset(
         raise ValueError(f"{file_extenstion} files are not supported.")
 
     file_extenstion = "json" if file_extenstion == "jsonl" else file_extenstion
+    # print("############")
+    # print(file_extenstion,data_files,namespace)
+    # print("~~~~~~~~~~~~")
     with main_process_first():
         dataset = load_dataset(file_extenstion, data_files=data_files, split=namespace)
 
@@ -163,7 +167,7 @@ def build_iterative_dataset(
         if os.path.isdir(data_path):
             data_files.extend([os.path.join(data_path, fn) for fn in os.listdir(data_path)])
         elif os.path.isfile(data_path):
-            data_files.append(data_files)
+            data_files.append(data_path)
         else:
             raise FileNotFoundError(f"Dataset {data_path} not exists.")
 
