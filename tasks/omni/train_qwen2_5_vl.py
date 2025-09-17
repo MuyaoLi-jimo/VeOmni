@@ -54,22 +54,12 @@ ROLE_MAPPING = {
     "gpt": "assistant",
 }
 
-def prepare_system_prompt(example:dict):
-    system_prompt = ""
-    if example.get("system_prompt"):
-        return example["system_prompt"]
-    for system_prompt_label,local_system_prompt in SYSTEM_PROMPT_MAP.items(): # only choose the final one
-        if system_prompt_label in example.get("label",[]):
-            system_prompt = local_system_prompt
-            break
-    return system_prompt
 
 def process_sample(
     sample: Dict[str, Any],
     processor: "ProcessorMixin",
     chat_template: "ChatTemplate",
     position_id_func: "Callable",
-    forbid_system_prompt:bool = False,
     **kwargs,
 ):
     """
@@ -79,12 +69,6 @@ def process_sample(
         kwargs["source_name"] if "source_name" in kwargs else sample["source"]
     )  # source_name if use multisource_dataset
     conversations = sample["conversations"] if "conversations" in sample else sample["text"]  # text-only data
-    
-    if forbid_system_prompt:
-        system_prompt = ""
-    else:
-        system_prompt = prepare_system_prompt(sample)
-    kwargs["system_prompt"] = system_prompt
     
     conversations = conv_preprocess(source, conversations, **kwargs)
 
@@ -186,9 +170,6 @@ class MyDataArguments(DataArguments):
     source_name: str = field(
         default="craftjarvis",
     )
-    forbid_system_prompt:bool = field(
-        default=False,
-    )
     enable_multisource: bool = field(
         default=True,
     )
@@ -250,7 +231,6 @@ def main():
         position_id_func=position_id_func,
         source_name = args.data.source_name,
         max_seq_length = args.data.max_seq_len,
-        forbid_system_prompt = args.data.forbid_system_prompt
     )
 
     if args.train.rmpad:

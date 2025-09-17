@@ -492,7 +492,7 @@ class Qwen2_5VLFocalChatTemplate(Qwen2_5VLTemplate):
         # messages.append(self._get_system_mesage())
         last_assistent_content = ""
         focal_alpha = 1.0
-        min_focal_alpha = 3 / (len(conversations)+10)
+        #min_focal_alpha = 3 / (len(conversations)+10)
         for message in conversations:
             role = message[0]
             content = ""
@@ -513,7 +513,7 @@ class Qwen2_5VLFocalChatTemplate(Qwen2_5VLTemplate):
             if role == "assistant":
                 if last_assistent_content == content:
                     focal_alpha *= 0.75
-                    focal_alpha = max(min_focal_alpha, focal_alpha)
+                    #focal_alpha = max(min_focal_alpha, focal_alpha)
                     if random.random() > focal_alpha:
                         messages[-1]["loss_mask"] = 0
                 else:
@@ -524,11 +524,14 @@ class Qwen2_5VLFocalChatTemplate(Qwen2_5VLTemplate):
 
         input_ids, attention_mask, labels = [], [], []
         
+        content_strs = ""
         for message in messages:
             if message["content"] == "":  # eval
                 content_str = "<|im_start|>" + message["role"] + "\n"
             else:
                 content_str = "<|im_start|>" + message["role"] + "\n" + message["content"].strip() + "<|im_end|>\n"
+            content_strs += content_str
+            
             content_ids = self.tokenizer.encode(content_str, add_special_tokens=False)
             input_ids += content_ids
             attention_mask += [1] * len(content_ids)
@@ -537,6 +540,7 @@ class Qwen2_5VLFocalChatTemplate(Qwen2_5VLTemplate):
             else:
                 labels += [IGNORE_INDEX] * len(content_ids)
         #print([message["loss_mask"] for message  in messages])
+        #print(content_strs)
         tokenized_example = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
         tokenized_example = {k: torch.tensor(v) for k, v in tokenized_example.items()}
 
