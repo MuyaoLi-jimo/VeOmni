@@ -54,7 +54,6 @@ ROLE_MAPPING = {
     "gpt": "assistant",
 }
 
-
 def process_sample(
     sample: Dict[str, Any],
     processor: "ProcessorMixin",
@@ -107,7 +106,7 @@ def process_sample(
                     )
                 if any(r!=0 for r in resolution):
                     image_content.resize(size=resolution)
-            except FileNotFoundError as ef:
+            except Exception as ef:
                 print(ef)
                 if images:
                     image_content = images[-1]

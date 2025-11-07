@@ -40,3 +40,5 @@ if __name__ == "__main__":
     logger.info(f"Merge Args: {args}")
     merge_to_hf_pt(load_dir, save_dir, model_assets_dir)
     logger.info(f"Merge to hf pt success! Save to: {save_dir}")
+
+

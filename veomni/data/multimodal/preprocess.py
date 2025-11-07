@@ -43,6 +43,30 @@ def craftjarvis_sft_preprocess(conversations, system_prompt:str="", **kwargs):
             constructed_conversations.append([role] + construct_contents)
     return constructed_conversations
 
+def craftjarvis_sft_new_preprocess(conversations, system_prompt:str="", **kwargs):
+    constructed_conversations = []
+    
+    if conversations[0]["role"] != "user":  # Skip the first one if it is not from human
+        conversations = conversations[1:]
+    assert conversations[0]["role"] == "user"
+    
+    for conversation in conversations:
+        content = conversation["content"]
+        role = conversation["role"]
+        if isinstance(content,str):
+            constructed_conversations.append([role, ("text", content)])
+        else:
+            construct_contents = []
+            for c in content:
+                item_type = c["type"]
+                if item_type == "text":
+                    construct_contents.append(("text", c["text"], c.get("mask",False)))
+                else:
+                    assert item_type == "image"
+                    construct_contents.append(("image", None, c.get("mask",False)))
+            constructed_conversations.append([role] + construct_contents)
+    return constructed_conversations
+
 def sharegpt4v_pretrain_preprocess(conversations, generation_ratio=0.0, **kwargs):
     constructed_conversation = []
     if conversations[0]["from"] != "human":  # Skip the first one if it is not from human
