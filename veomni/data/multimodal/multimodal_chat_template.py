@@ -940,6 +940,201 @@ class Qwen3MoeChatTemplate(Qwen25OmniChatTemplate):
     def _get_system_mesage(self):
         return None
 
+class Qwen3MoewithFocalChatTemplate(Qwen3MoeChatTemplate):
+    def __init__(self, tokenizer, **kwargs):
+        super().__init__(tokenizer, **kwargs)
+    
+    def encode_messages(
+        self, conversations: Sequence[Dict[str, str]], num_tokens: Dict[str, List[int]] = defaultdict(list), **kwargs
+    ) -> Dict[str, List[int]]:
+        sys_msg = self._get_system_mesage()
+        messages = [] if sys_msg is None else [sys_msg]
+        multimodal_num_tokens = {key: iter(item) for key, item in num_tokens.items()}  # image, video, audio
+
+        video_grid_thw = kwargs.get("grid_thw", {}).get("video", None)
+        video_grid_thw = iter(video_grid_thw) if video_grid_thw is not None else None
+        
+        last_assistent_content = ""
+        focal_alpha = 1.0
+
+        for message in conversations:
+            role = message[0]
+            content = ""
+            for value in message[1:]:
+                if value[0] == "text":
+                    content += value[1]
+                elif value[0] == "image":
+                    content += self.image_pattern(next(multimodal_num_tokens["image"]))
+                elif value[0] == "video":
+                    if video_grid_thw is None:
+                        raise ValueError(
+                            f"video_grid_thw: {video_grid_thw} is None. "
+                            "Make sure your video processor outputs `grid_thw`."
+                        )
+                    content += self.video_pattern(
+                        next(multimodal_num_tokens["video"]),
+                        next(multimodal_num_tokens["audio"]),
+                        curr_video_grid_thw=next(video_grid_thw),
+                    )
+                elif value[0] == "audio":
+                    content += self.audio_pattern(next(multimodal_num_tokens["audio"]))
+                else:
+                    raise ValueError(f"Unknown value type: {value[0]}")
+            messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "loss_mask": 1 if role == "assistant" else 0,
+                }
+            )
+            
+            if role == "assistant":
+                if last_assistent_content == content:
+                    focal_alpha *= 0.75
+                    #focal_alpha = max(min_focal_alpha, focal_alpha)
+                    if random.random() > focal_alpha:
+                        messages[-1]["loss_mask"] = 0
+                else:
+                    focal_alpha = 1.0
+                last_assistent_content = content
+                
+        input_ids, attention_mask, labels = [], [], []
+        for message in messages:
+            content_str = message["content"].strip()
+            loss_mask = message["loss_mask"]
+            role = message["role"]
+            if content_str:
+                content_str = "<|im_start|>" + message["role"] + "\n" + content_str + "<|im_end|>\n"
+            else:
+                content_str = "<|im_start|>" + message["role"] + "\n"
+
+
+            message_ids = self.tokenizer.encode(content_str, add_special_tokens=False)
+            input_ids += message_ids
+            attention_mask += [1] * len(message_ids)
+            if loss_mask == 1:
+                labels += message_ids
+            else:
+                labels += [IGNORE_INDEX] * len(message_ids)
+
+        tokenized_example = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        tokenized_example = {k: torch.tensor(v) for k, v in tokenized_example.items()}
+
+        # change qwen25omni tokenized_image/video/audio_id to seedomni_image/video/audio_id
+        input_mask = tokenized_example["labels"] == IGNORE_INDEX
+
+        image_mask = tokenized_example["input_ids"] == self.image_token_id
+        input_image_mask = image_mask & input_mask
+        output_image_mask = image_mask & ~input_mask
+        tokenized_example["input_ids"][input_image_mask] = TYPE2INDEX["input"]["image"]
+        tokenized_example["input_ids"][output_image_mask] = TYPE2INDEX["output"]["image"]
+
+        # no video/audio output currently
+        video_mask = tokenized_example["input_ids"] == self.video_token_id
+        tokenized_example["input_ids"][video_mask] = TYPE2INDEX["input"]["video"]
+
+        audio_mask = tokenized_example["input_ids"] == self.audio_token_id
+        tokenized_example["input_ids"][audio_mask] = TYPE2INDEX["input"]["audio"]
+
+        tokenized_example["labels"][output_image_mask] = IGNORE_INDEX  # the label will be filled in decoder.
+        return tokenized_example
+
+class Qwen2VLwithFocalChatTemplate(Qwen2VLTemplate):
+    system_prompt = "You are a helpful assistant."
+
+    def _get_system_mesage(self):
+        system_message = {
+            "role": "system",
+            "content": self.system_prompt,
+            "loss_mask": 0,
+        }
+        return system_message
+
+    def encode_messages(
+        self, conversations: Sequence[Dict[str, str]], num_tokens: Dict[str, List[int]] = defaultdict(list), **kwargs
+    ) -> Dict[str, List[int]]:
+        sys_msg = self._get_system_mesage()
+        messages = [] if sys_msg is None else [sys_msg]
+        data_type = ""
+        image_token_num_list = iter(num_tokens.pop("image", []))
+        video_token_num_list = iter(num_tokens.pop("video", []))
+        
+        last_assistent_content = ""
+        focal_alpha = 1.0
+        
+        for message in conversations:
+            role = message[0]
+            content = ""
+            for value in message[1:]:
+                if value[0] == "text":
+                    content += value[1]
+                elif value[0] == "image":
+                    data_type = "t2i" if role == "assistant" else "i2t"
+                    content += self.image_pattern(next(image_token_num_list))
+                elif value[0] == "video":
+                    content += self.video_pattern(next(video_token_num_list))
+                else:
+                    raise ValueError(f"Unknown value type: {value[0]}")
+            messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "loss_mask": 1 if role == "assistant" else 0,
+                }
+            )
+            if role == "assistant":
+                if last_assistent_content == content:
+                    focal_alpha *= 0.75
+                    if random.random() > focal_alpha:
+                        messages[-1]["loss_mask"] = 0
+                else:
+                    focal_alpha = 1.0
+                last_assistent_content = content
+
+        input_ids, attention_mask, labels = [], [], []
+        for message in messages:
+            content_str = message["content"].strip()
+            loss_mask = message["loss_mask"]
+            role = message["role"]
+            message_ids = self.tokenizer.encode("<|im_start|>" + message["role"] + "\n", add_special_tokens=False)
+
+            if content_str:
+                end_ids = self.tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
+                content_ids = self.tokenizer.encode(content_str, add_special_tokens=False)
+                if (
+                    role == "user" and data_type == "t2i" and self._unconditioned_generation
+                ):  # unconditioned generation
+                    message_ids += [self.tokenizer.pad_token_id] * len(content_ids) + end_ids
+                else:
+                    message_ids += content_ids + end_ids
+
+            input_ids += message_ids
+            attention_mask += [1] * len(message_ids)
+            if loss_mask == 1:
+                labels += message_ids
+            else:
+                labels += [IGNORE_INDEX] * len(message_ids)
+
+        tokenized_example = {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        tokenized_example = {k: torch.tensor(v) for k, v in tokenized_example.items()}
+
+        # change qwen2vl tokenized_image/video_id to seedomni_image/video_id
+        image_mask = tokenized_example["input_ids"] == self.image_token_id
+        input_mask = tokenized_example["labels"] == IGNORE_INDEX
+        input_image_mask = image_mask & input_mask
+        output_image_mask = image_mask & ~input_mask
+        tokenized_example["input_ids"][input_image_mask] = TYPE2INDEX["input"]["image"]
+        tokenized_example["input_ids"][output_image_mask] = TYPE2INDEX["output"]["image"]
+
+        video_mask = tokenized_example["input_ids"] == self.video_token_id
+        tokenized_example["input_ids"][video_mask] = TYPE2INDEX["input"]["video"]
+        tokenized_example["labels"][output_image_mask] = IGNORE_INDEX  # the label will be filled in decoder.
+        if data_type == "t2i":  # t2i doesn't train <|vision_start|>
+            labels = tokenized_example["labels"]
+            labels[labels == self.image_start_id] = IGNORE_INDEX
+            tokenized_example["labels"] = labels
+
+        return tokenized_example
 
 class SeedOssPretrainTemplate(LlamaPretrainTemplate):
     def __init__(self, tokenizer: PreTrainedTokenizer, **kwargs) -> None:
@@ -1003,9 +1198,10 @@ TEMPLATES = {
     "janus": JanusChatTemplate,
     "llama": LlamaPretrainTemplate,
     "qwen3moe": Qwen3MoeChatTemplate,
+    "qwen3moe_focal": Qwen3MoewithFocalChatTemplate,
+    "qwen2vl_focal": Qwen2VLwithFocalChatTemplate,
     "seed_oss": SeedOssPretrainTemplate,
 }
-
 
 def build_multimodal_chat_template(template_name: str, tokenizer: AutoTokenizer, **kwargs) -> "ChatTemplate":
     if template_name not in TEMPLATES:

@@ -238,6 +238,8 @@ class DataArguments:
         if self.num_workers == 0:
             self.prefetch_factor = None
 
+        self.mm_configs = dict()
+
 
 @dataclass
 class TrainingArguments:

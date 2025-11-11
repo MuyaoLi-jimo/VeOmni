@@ -56,6 +56,29 @@ def sharegpt4v_sft_preprocess(conversations, **kwargs):
             constructed_conversation.append([role, ("text", value)])
     return constructed_conversation
 
+def craftjarvis_sft_preprocess(conversations, system_prompt:str="", **kwargs):
+    constructed_conversations = []
+    
+    if conversations[0]["role"] != "user":  # Skip the first one if it is not from human
+        conversations = conversations[1:]
+    assert conversations[0]["role"] == "user"
+    
+    for conversation in conversations:
+        content = conversation["content"]
+        role = conversation["role"]
+        if isinstance(content,str):
+            constructed_conversations.append([role, ("text", content)])
+        else:
+            construct_contents = []
+            for c in content:
+                item_type = c["type"]
+                if item_type == "text":
+                    construct_contents.append(("text", c["text"]))
+                else:
+                    assert item_type == "image"
+                    construct_contents.append(("image", None))
+            constructed_conversations.append([role] + construct_contents)
+    return constructed_conversations
 
 def doom_preprocess(conversations, max_image_nums=None, **kwargs):
     """
@@ -316,6 +339,7 @@ def voice_assistant_preprocess(conversations, **kwargs):
 
 
 DATASETS = {
+    "craftjarvis_sft": craftjarvis_sft_preprocess,
     "sharegpt4v_pretrain": sharegpt4v_pretrain_preprocess,
     "sharegpt4v_captioner": sharegpt4v_pretrain_preprocess,
     "sharegpt4v_captioner_sft": sharegpt4v_sft_preprocess,

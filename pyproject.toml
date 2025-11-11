@@ -83,6 +83,10 @@ test = [
   "expecttest"
 ]
 
+[[tool.uv.index]]
+name = "tuna"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
 
 [tool.uv]
 # This locks the uv version so that we have a consistent uv behavior across the board.
